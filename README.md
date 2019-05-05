@@ -12,14 +12,14 @@ Trello.open_authorization_url key: 'YOUR_API_KEY_HERE'   # this gives you your m
 
 3. Copy `config.toml.sample` to `config.toml` and edit it, fill in your `developer_key` and `member_token`
 
+# Dry run
+
+Run `./sync.rb --dry-run`. This will only prepare the board (creating the lists) but not create or update any cards.
+
 # Test run
 
-Create a Trello board for testing, get its ID (from irb as above, run `Trello::Board.all` to get all your boards; you want the `id` field.)
-
-Change `BOARD_ID = 'xxx'` in line 22 to your test board ID.
-
-Run `./sync.rb`.
+Run `./sync.rb`. By default, this modifies a test board.
 
 # Production run
 
-Revert to the old `BOARD_ID` and run `./sync.rb`.
+Run `./sync.rb --prod`. You probably do not want to do this.
