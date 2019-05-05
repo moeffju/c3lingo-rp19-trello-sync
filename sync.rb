@@ -108,7 +108,7 @@ log "Getting sessions from #{SESSIONS_URL}"
 req = HTTParty.get(SESSIONS_URL); nil
 log "Parsing sessions"
 sessions = req.parsed_response; nil
-conference_dates = sessions.filter{ |x| x['live_translation'] == 'Yes' }.collect{ |x| x['datetime_start'][0..9] }.uniq
+conference_dates = sessions.collect{ |x| x['datetime_start'][0..9] }.uniq.filter{ |x| x !~ /^\s*$/ }
 log "Conference dates: #{conference_dates.join(', ')}"
 
 # prepare the Trello board
@@ -153,7 +153,8 @@ cards.each do |card|
   cards_map[talk_id] = card
 end
 
-translated_sessions = sessions.filter{ |x| x['live_translation'] == 'Yes' && STAGE_FILTER.include?(x['room']) }
+# x['live_translation'] == 'Yes' && 
+translated_sessions = sessions.filter{ |x| STAGE_FILTER.include?(x['room']) }
 
 log "Syncing sessions…"
 translated_sessions.each do |session|
