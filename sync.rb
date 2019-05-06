@@ -20,8 +20,9 @@ Trello.configure do |setting|
   setting.member_token = config[:trello][:member_token]
 end
 
-MODE = ARGV.any? { |arg| arg =~ /--prod/ } ? 'prod' : 'test'
-DRY_RUN = ARGV.any? { |arg| arg =~ /--dry-run|-n/ }
+MODE = ARGV.any? { |arg| arg =~ /^--prod/ } ? 'prod' : 'test'
+DRY_RUN = ARGV.any? { |arg| arg =~ /^--dry-run|^-n/ }
+API = ARGV.any? { |arg| arg =~ /^--api=elfengleich/ } ? 'elfengleich' : 'csa'
 
 if MODE == 'prod'
   BOARD_ID = '5ccc5ac4a9ae524b9d9ad792'
@@ -30,7 +31,10 @@ else
 end
 
 LINK_BASE = 'https://19.re-publica.com'
-SESSIONS_URL = 'https://www.elfengleich.de/rp19/sessions19.json'
+SESSIONS_URL = {
+  'elfengleich' => 'https://www.elfengleich.de/rp19/sessions19.json',
+  'csa' => 'https://api.conference.systems/api/rp19/sessions',
+}
 
 STAGE_FILTER = ['Stage 1', 'Stage 2']
 
@@ -53,6 +57,53 @@ UTC = Time.find_zone('UTC')
 log "Run started: #{RUN}"
 log "TEST MODE, using test board; pass `--prod` if you mean it" if MODE != 'prod'
 log "DRY RUN, not creating or updating cards" if DRY_RUN
+
+def parse_sessions_csa(sessions)
+  sessions['data'].filter do |session|
+    session['track'] && session['lang'] && session['location'] && session['day'] && session['begin'] && session['end']
+  end.map do |session|
+    res = {
+      id: session['id'],
+      title: session['title'],
+      abstract: session['abstract'],
+      url: session['url'],
+      description: session['description'],
+      track: session['track']['label_en'],
+      lang: session['lang']['label_en'],
+      location: session['location']['label_en'],
+      speakers: session['speakers'].map{ |x| x['name'] },
+      status: session['cancelled'] ? 'cancelled' : 'scheduled',
+      day: session['day']['date'],
+      begin: UTC.parse(session['begin']),
+      end: UTC.parse(session['end']),
+    }
+    res
+  end
+end
+
+def parse_sessions_elfengleich(sessions)
+  sessions.map do |session|
+    session['title'] =~ /href="([^"]+)"/
+    session_link = LINK_BASE + $1
+    session_speakers_list = CGI.unescapeHTML(session['speaker']).split(/,\s*/)
+    res = {
+      id: session['nid'],
+      title: CGI.unescapeHTML(session['title_text']),
+      abstract: session['short_thesis'],
+      url: session_link,
+      description: convert_to_text(session['description']),
+      track: CGI.unescapeHTML(session['track']),
+      lang: session['language'],
+      location: session['room'],
+      speakers: session_speakers_list,
+      status: session['status'] == 'Cancelled' ? 'cancelled' : 'scheduled',
+      day: session['datetime_start'][0..9],
+      begin: UTC.parse(session['datetime_start']),
+      end: UTC.parse(session['datetime_end']),
+    }
+    res
+  end
+end
 
 def convert_to_text(html, line_length = 65, from_charset = 'UTF-8')
   txt = html
@@ -104,11 +155,12 @@ def convert_to_text(html, line_length = 65, from_charset = 'UTF-8')
 end
 
 # get rp sessions
-log "Getting sessions from #{SESSIONS_URL}"
-req = HTTParty.get(SESSIONS_URL); nil
+log "Getting sessions from #{API} api: #{SESSIONS_URL[API]}"
+req = HTTParty.get(SESSIONS_URL[API]); nil
 log "Parsing sessions"
 sessions = req.parsed_response; nil
-conference_dates = sessions.collect{ |x| x['datetime_start'][0..9] }.uniq.filter{ |x| x !~ /^\s*$/ }
+sessions = send("parse_sessions_#{API}".to_sym, sessions); nil
+conference_dates = sessions.filter{ |x| STAGE_FILTER.include?(x[:location]) }.collect{ |x| x[:day] }.uniq
 log "Conference dates: #{conference_dates.join(', ')}"
 
 # prepare the Trello board
@@ -120,7 +172,7 @@ log "Lists found: [#{lists.map(&:name).join(', ')}]"
 backlog = lists.select{ |l| l.name == 'Backlog' }.first || Trello::List.create(board_id: board.id, name: 'Backlog')
 day_lists = {}
 conference_dates.each_with_index do |date, i|
-  list_name = "#{date} (Day #{i+1})"
+  list_name = date
   day_lists[date] = lists.select{ |l| l.name == list_name }.first || Trello::List.create(board_id: board.id, name: list_name)
   log "Day list for #{date}: #{day_lists[date].name}"
 end
@@ -154,56 +206,46 @@ cards.each do |card|
 end
 
 # x['live_translation'] == 'Yes' && 
-translated_sessions = sessions.filter{ |x| STAGE_FILTER.include?(x['room']) }
+translated_sessions = sessions.filter{ |x| STAGE_FILTER.include?(x[:location]) }
 
 count_new = 0
 count_updated = 0
 log "Syncing sessions…"
 translated_sessions.each do |session|
-  session['title'] =~ /href="([^"]+)"/
-  session_link = LINK_BASE + $1
-  session_title = CGI.unescapeHTML(session['title_text'])
-  session_start = UTC.parse(session['datetime_start'])
-  session_end = UTC.parse(session['datetime_end'])
-
-  session_start_date = session_start.localtime.iso8601[0..9]
-  session_start_time = session_start.localtime.iso8601[11..15]
-  session_end_time = session_end.localtime.iso8601[11..15]
-  session_speakers_list = CGI.unescapeHTML(session['speaker']).split(/,\s*/)
-  session_speakers = case session_speakers_list.size
-    when 0..3 then session_speakers_list.join(', ')
-    when 4..8 then session_speakers_list.map{ |name| name.split(/\s+/)[-1] }.join(', ')
-    else "#{session_speakers_list.size} speakers"
+  session_speakers = case session[:speakers].size
+    when 0..3 then session[:speakers].join(', ')
+    when 4..8 then session[:speakers].map{ |name| name.split(/\s+/)[-1] }.join(', ')
+    else "#{session[:speakers].size} speakers"
   end
-  session_list = day_lists[session_start_date]
-
+  session_list = day_lists[session[:day]]
+  
   data = {}
-  data[:name] = "[#{session_start_time}–#{session_end_time}] #{session['room']}: #{session_title} (#{session_speakers}) (#{SESSION_LANG_MAP[session['language']]}) (\##{session['nid']})"
-  if session['status'] == 'Cancelled'
+  data[:name] = "[#{session[:begin].localtime.strftime('%H:%M')}–#{session[:end].localtime.strftime('%H:%M')}] #{session[:location]}: #{session[:title]} (#{session_speakers}) (#{SESSION_LANG_MAP[session[:lang]]}) (\##{session[:id]})"
+  if session[:status] == 'cancelled'
     data[:name] = 'CANCELLED: ' + data[:name]
   end
   data[:desc] = <<-_EOF_
-  **[#{session_title}](#{session_link})**
+  **[#{session[:title]}](#{session[:url]})**
 
-  *#{session['language']} #{session['format']}, #{session['room']} @ #{session_start_date}, #{session_start_time}–#{session_end_time}*
-  #{CGI.unescapeHTML(session['track'])}, #{session['experience']}
+  *#{session[:lang]}, #{session[:location]} @ #{session[:day]}, #{session[:begin].localtime.strftime('%H:%M')}–#{session[:end].localtime.strftime('%H:%M')}*
+  #{session[:location]}
 
   **Speakers**
-  #{CGI.unescapeHTML(session['speaker'])}
+  #{session[:speakers].join(', ')}
 
   **Summary**
-  #{CGI.unescapeHTML(session['short_thesis'])}
+  #{session[:abstract]}
 
-  #{convert_to_text(session['description'])}
+  #{session[:description]}
 
   ----
 
-  *Last updated: #{session['changed']} / #{RUN}*
+  *Last synced: #{RUN}*
   _EOF_
-  data[:due] = session_start.iso8601
+  data[:due] = session[:begin].iso8601
 
-  if cards_map.has_key? session['nid']
-    card = cards_map[session['nid']]
+  if cards_map.has_key? session[:id]
+    card = cards_map[session[:id]]
     # update_fields did not work for some reason, but this does
     data.each { |k,v| card.send(k.to_s+'=', v) }
     card.update! unless DRY_RUN
@@ -220,8 +262,8 @@ translated_sessions.each do |session|
     count_new += 1
   end
   unless DRY_RUN
-    card.add_label format_labels[session['format']] unless card.labels.include? format_labels[session['format']]
-    card.add_label language_labels[session['language']] unless card.labels.include? language_labels[session['language']]
+    #card.add_label format_labels[session['format']] unless card.labels.include? format_labels[session['format']]
+    card.add_label language_labels[session[:lang]] unless card.labels.include? language_labels[session[:lang]]
     card.save
   else
     log "DRY RUN: Not saving"
