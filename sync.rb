@@ -156,6 +156,8 @@ end
 # x['live_translation'] == 'Yes' && 
 translated_sessions = sessions.filter{ |x| STAGE_FILTER.include?(x['room']) }
 
+count_new = 0
+count_updated = 0
 log "Syncing sessions…"
 translated_sessions.each do |session|
   session['title'] =~ /href="([^"]+)"/
@@ -206,22 +208,24 @@ translated_sessions.each do |session|
     data.each { |k,v| card.send(k.to_s+'=', v) }
     card.update! unless DRY_RUN
     card.move_to_list session_list unless DRY_RUN
-    log "Card (updated): #{card.name}"
+    log "Existing: #{card.name}"
+    count_updated += 1
   else
     unless DRY_RUN
       card = Trello::Card.create(list_id: backlog.id, **data, list_id: session_list.id)
-      log "Card (new): #{card.name}"
+      log "Added: #{card.name}"
     else
-      log "DRY RUN: Not saving Card (new): #{data[:name]}"
+      log "DRY RUN: Not adding: #{data[:name]}"
     end
+    count_new += 1
   end
   unless DRY_RUN
-    card.add_label format_labels[session['format']] rescue nil
-    card.add_label language_labels[session['language']] rescue nil
+    card.add_label format_labels[session['format']] unless card.labels.include? format_labels[session['format']]
+    card.add_label language_labels[session['language']] unless card.labels.include? language_labels[session['language']]
     card.save
   else
-    log "DRY RUN: Not saving card changes"
+    log "DRY RUN: Not saving"
   end
 end
 
-log "Done!"
+log "Done - #{count_new} new and #{count_updated} existing!"
