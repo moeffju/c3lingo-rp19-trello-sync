@@ -46,10 +46,6 @@ LANGUAGE_COLOR_MAP = {
   'German' => 'black',
   'English' => 'sky',
 }
-FORMAT_COLOR_MAP = {
-  'Talk' => 'null',
-  'Discussion' => 'null',
-}
 
 RUN = Time.now.iso8601[11..18]
 UTC = Time.find_zone('UTC')
@@ -160,7 +156,7 @@ req = HTTParty.get(SESSIONS_URL[API]); nil
 log "Parsing sessions"
 sessions = req.parsed_response; nil
 sessions = send("parse_sessions_#{API}".to_sym, sessions); nil
-conference_dates = sessions.filter{ |x| STAGE_FILTER.include?(x[:location]) }.collect{ |x| x[:day] }.uniq
+conference_dates = sessions.filter{ |x| STAGE_FILTER.include?(x[:location]) }.collect{ |x| x[:day] }.uniq.sort
 log "Conference dates: #{conference_dates.join(', ')}"
 
 # prepare the Trello board
@@ -172,7 +168,7 @@ log "Lists found: [#{lists.map(&:name).join(', ')}]"
 backlog = lists.select{ |l| l.name == 'Backlog' }.first || Trello::List.create(board_id: board.id, name: 'Backlog')
 day_lists = {}
 conference_dates.each_with_index do |date, i|
-  list_name = date
+  list_name = "#{date} (Day #{i+1})"
   day_lists[date] = lists.select{ |l| l.name == list_name }.first || Trello::List.create(board_id: board.id, name: list_name)
   log "Day list for #{date}: #{day_lists[date].name}"
 end
@@ -186,14 +182,6 @@ unless DRY_RUN
     language_labels[lang] = labels.select{ |l| l.name == lang }.first || Trello::Label.create(board_id: board.id, name: lang, color: LANGUAGE_COLOR_MAP[lang])
   end
   log "Language labels: [#{language_labels.map{ |k,v| "#{v.name} (#{v.color})" }.join(', ')}]"
-end
-format_labels = {}
-unless DRY_RUN
-  FORMAT_COLOR_MAP.keys.each do |fmt|
-    format_labels[fmt] = labels.select{ |l| l.name == fmt }.first || Trello::Label.create(board_id: board.id, name: fmt, color: FORMAT_COLOR_MAP[fmt])
-    format_labels[fmt].color = FORMAT_COLOR_MAP[fmt]
-  end
-  log "Format labels: [#{format_labels.map{ |k,v| "#{v.name} (#{v.color})" }.join(', ')}]"
 end
 
 log "Getting cards"
@@ -248,9 +236,13 @@ translated_sessions.each do |session|
     card = cards_map[session[:id]]
     # update_fields did not work for some reason, but this does
     data.each { |k,v| card.send(k.to_s+'=', v) }
-    card.update! unless DRY_RUN
-    card.move_to_list session_list unless DRY_RUN
-    log "Existing: #{card.name}"
+    unless DRY_RUN
+      card.update!
+      card.move_to_list session_list
+      log "Existing: #{card.name}"
+    else
+      log "DRY RUN: Not updating: #{data[:name]}"
+    end
     count_updated += 1
   else
     unless DRY_RUN
@@ -262,11 +254,8 @@ translated_sessions.each do |session|
     count_new += 1
   end
   unless DRY_RUN
-    #card.add_label format_labels[session['format']] unless card.labels.include? format_labels[session['format']]
     card.add_label language_labels[session[:lang]] unless card.labels.include? language_labels[session[:lang]]
     card.save
-  else
-    log "DRY RUN: Not saving"
   end
 end
 
